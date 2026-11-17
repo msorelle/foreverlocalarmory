@@ -26,4 +26,4 @@ Request API access and create a key after approval. Enter the key at the hidden 
 
 The app keeps the key on the local Python server and sends ForeverDB the catalog item ID when you open an item. Character names, account names, inventory counts, and save files stay on this computer. Item details describe the catalog entry. Equipped enchants and other character-specific modifications aren't part of that lookup.
 
-Item details include visible credit. [Data from ForeverDB.net](https://foreverdb.net)
+The inventory page footer includes the attribution badge. [Data from ForeverDB.net](https://foreverdb.net)
