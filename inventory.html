@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forever Local Armory</title>
+<style>
+  :root { color-scheme: dark; font: 16px system-ui; background: #141719; color: #e9e9e4; }
+  body { margin: 0 auto; padding: 2rem 1rem; max-width: 62rem; }
+  h1 { font: 2.5rem Georgia, serif; color: #eac984; margin: 0 0 1.5rem; }
+  label { display: grid; gap: .35rem; }
+  .filters { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; }
+  .search { flex: 1 1 16rem; }
+  input, select, button { font: inherit; color: inherit; background: #23282b; padding: .5rem;
+    border: 1px solid #667176; border-radius: .25rem; }
+  button { cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .45rem .25rem; border-bottom: 1px solid #3c4448; }
+  th:last-child, td:last-child { text-align: right; }
+  td button { text-align: left; border: 0; background: transparent; padding: .2rem 0; }
+  dialog { width: min(28rem, 80vw); padding: 1.25rem; border: 1px solid #667176; color: inherit; background: #23282b; }
+  dialog::backdrop { background: #000a; }
+  #icon { width: 56px; height: 56px; border-radius: .25rem; }
+  #item-id { color: #bcc6c9; font-size: .9rem; }
+  .item-name { color: var(--rarity-color, #eac984); }
+  #tooltip { list-style: none; padding: 0; line-height: 1.45; }
+  #prices div { display: flex; gap: 1rem; justify-content: space-between; }
+  #prices dd { margin: 0; color: #eac984; }
+  a { color: #eac984; }
+  #status { color: #bcc6c9; }
+</style>
+<main>
+  <h1>Forever Local Armory</h1>
+  <div class="filters">
+    <label class="search">Search items or characters
+      <input id="query" type="search" placeholder="Item name, ID, or character">
+    </label>
+    <label>Character<select id="character"></select></label>
+    <label>Location<select id="location"></select></label>
+    <button id="refresh" type="button">Refresh saves</button>
+  </div>
+  <p id="status" role="status"></p>
+  <table>
+    <thead><tr><th scope="col">Item</th><th scope="col">Character</th><th scope="col">Location</th><th scope="col">Qty</th></tr></thead>
+    <tbody id="items"></tbody>
+  </table>
+</main>
+<dialog id="details" aria-labelledby="item-title">
+  <img id="icon" alt="" hidden>
+  <h2 id="item-title"></h2>
+  <p id="item-id"></p>
+  <p id="held"></p>
+  <p id="metadata" role="status"></p>
+  <ul id="tooltip" aria-label="Item stats" hidden></ul>
+  <dl id="prices" aria-label="Vendor prices" hidden></dl>
+  <p id="catalog-source" hidden>
+    <a href="https://foreverdb.net" target="_blank" rel="noreferrer">Data from ForeverDB.net</a>
+    · <a id="catalog-item" target="_blank" rel="noreferrer">View item on ForeverDB</a>
+  </p>
+  <form method="dialog"><button>Close</button></form>
+</dialog>
+<script>
+  const byId = id => document.getElementById(id);
+  const query = byId('query');
+  const character = byId('character');
+  const locationFilter = byId('location');
+  const status = byId('status');
+  const items = byId('items');
+  const details = byId('details');
+  let snapshot;
+  let lookup;
+  const rarityColors = new Map([
+    ['poor', '#9d9d9d'], ['common', '#fff'], ['uncommon', '#1eff00'],
+    ['rare', '#549eff'], ['epic', '#c482ff'], ['legendary', '#ff8000'],
+    ['artifact', '#e6cc80'], ['heirloom', '#00ccff']
+  ]);
+
+  function colorName(element, rarity) {
+    const color = rarityColors.get(rarity?.toLowerCase());
+    if (color) element.style.setProperty('--rarity-color', color);
+    else element.style.removeProperty('--rarity-color');
+  }
+
+  async function get(path, signal) {
+    const response = await fetch(path, {signal});
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error);
+    return body;
+  }
+
+  function options(select, label, values) {
+    const prior = select.value;
+    select.replaceChildren(new Option(label, ''), ...values.map(value => new Option(value, value)));
+    if (values.includes(prior)) select.value = prior;
+  }
+
+  async function show(item) {
+    const icon = byId('icon');
+    const metadata = byId('metadata');
+    const tooltip = byId('tooltip');
+    const prices = byId('prices');
+    for (const section of [tooltip, prices]) {
+      section.replaceChildren();
+      section.hidden = true;
+    }
+    icon.hidden = true;
+    icon.removeAttribute('src');
+    const title = byId('item-title');
+    title.textContent = item.name;
+    title.classList.add('item-name');
+    colorName(title, item.rarity);
+    byId('item-id').textContent = 'Item ID ' + item.id;
+    byId('held').textContent = item.count + ' held by ' + item.character + ' · ' + item.location;
+    byId('catalog-source').hidden = true;
+    byId('catalog-item').href = 'https://foreverdb.net/item/' + item.id;
+    metadata.textContent = 'Loading ForeverDB item details…';
+    details.showModal();
+    lookup = new AbortController();
+    const {signal} = lookup;
+    try {
+      const data = await get('item/' + item.id, signal);
+      if (signal.aborted) return;
+      byId('catalog-source').hidden = !data.fromForeverDB;
+      title.textContent = data.name || item.name;
+      colorName(title, data.quality || item.rarity);
+      metadata.textContent = [data.quality || item.rarity, data.type, data.slot, data.description, data.status]
+        .filter((value, index, values) => value && values.indexOf(value) === index)
+        .join(' · ') || 'No item description available.';
+      if (data.icon) {
+        icon.src = data.icon;
+        icon.hidden = false;
+      }
+      for (const line of data.tooltip || []) {
+        tooltip.appendChild(document.createElement('li')).textContent = line;
+      }
+      tooltip.hidden = !tooltip.childElementCount;
+      if (Number.isSafeInteger(data.sellPrice) && data.sellPrice > 0) {
+        const row = prices.appendChild(document.createElement('div'));
+        row.appendChild(document.createElement('dt')).textContent = 'Sell to vendor';
+        row.appendChild(document.createElement('dd')).textContent = formatMoney(data.sellPrice);
+      }
+      prices.hidden = !prices.childElementCount;
+    } catch (error) {
+      if (!signal.aborted) metadata.textContent = error.message;
+    }
+  }
+
+  function formatMoney(copper) {
+    const parts = [[Math.floor(copper / 10000), 'g'], [Math.floor(copper / 100) % 100, 's'], [copper % 100, 'c']];
+    return parts.filter(([amount]) => amount).map(([amount, unit]) => amount + unit).join(' ');
+  }
+
+  function render() {
+    if (!snapshot) return;
+    const terms = query.value.toLowerCase().trim().split(/\s+/);
+    const rows = snapshot.items.filter(item => {
+      const searchable = [item.name, item.id, item.character].join(' ').toLowerCase();
+      return (!character.value || item.character === character.value)
+        && (!locationFilter.value || item.location === locationFilter.value)
+        && terms.every(term => searchable.includes(term));
+    });
+    const fragment = document.createDocumentFragment();
+    for (const item of rows) {
+      const row = fragment.appendChild(document.createElement('tr'));
+      const button = row.insertCell().appendChild(document.createElement('button'));
+      button.textContent = item.name;
+      button.classList.add('item-name');
+      colorName(button, item.rarity);
+      button.onclick = () => show(item);
+      for (const value of [item.character, item.location, item.count]) row.insertCell().textContent = value;
+    }
+    items.replaceChildren(fragment);
+    const selected = snapshot.characters.find(entry => entry.name === character.value);
+    const timestamp = selected ? ' · Save modified ' + new Date(selected.savedAt).toLocaleString() : '';
+    status.textContent = rows.length + ' matching entries' + timestamp;
+  }
+
+  async function refresh() {
+    byId('refresh').disabled = true;
+    try {
+      snapshot = await get('inventory');
+      options(character, 'All characters', snapshot.characters.map(entry => entry.name).sort());
+      options(locationFilter, 'All locations', [...new Set(snapshot.items.map(item => item.location))].sort());
+      render();
+    } catch (error) {
+      snapshot = undefined;
+      items.replaceChildren();
+      status.textContent = error.message;
+    } finally {
+      byId('refresh').disabled = false;
+    }
+  }
+
+  query.addEventListener('input', render);
+  character.addEventListener('change', render);
+  locationFilter.addEventListener('change', render);
+  byId('refresh').onclick = refresh;
+  details.addEventListener('close', () => lookup?.abort());
+  refresh();
+</script>
+</html>
